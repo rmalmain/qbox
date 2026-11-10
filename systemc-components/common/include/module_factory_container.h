@@ -62,6 +62,12 @@ class ContainerBase : public virtual sc_core::sc_module,
      */
 
 private:
+    struct DeferredBinding {
+        std::string owner;
+        std::string initiator;
+        std::string target;
+    };
+
     // Performance optimization caches (lazy initialization)
     mutable std::map<std::string, cci::cci_value_list> m_module_args_cache;
     mutable std::map<std::string, bool> m_is_absolute_path_cache;
@@ -75,6 +81,8 @@ private:
     mutable std::map<std::string, std::set<std::string>> m_cci_children_cache;
     mutable std::map<std::string, std::vector<std::pair<std::string, cci::cci_value>>> m_cci_bind_params_cache;
     mutable bool m_cci_children_cache_initialized = false;
+
+    std::vector<DeferredBinding> deferred_bindings;
 
 public:
     SCP_LOGGER(());
@@ -297,7 +305,7 @@ public:
                     initname = std::string(name()) + "." + initname;
                 }
                 SCP_TRACE(())("Bind {} to {}", targetname, initname);
-                do_binding(m, initname, targetname);
+                bind_or_defer(m, initname, targetname);
             }
         }
     }
@@ -1221,6 +1229,11 @@ public:
         initiator_signal_sockets[id]->write(value);
     }
 
+    void before_end_of_elaboration() override
+    {
+        resolve_deferred_bindings();
+    }
+
 private:
     void b_transport(int id, tlm::tlm_generic_payload& trans, sc_core::sc_time& delay)
     {
@@ -1270,21 +1283,80 @@ private:
         return ret;
     }
 
-    void do_binding(sc_core::sc_module* module_obj, const std::string& initiator_name, const std::string& target_name)
+    void bind_objects(sc_core::sc_object* initiator, sc_core::sc_object* target)
     {
-        sc_core::sc_object* i_obj = nullptr;
-        sc_core::sc_object* t_obj = nullptr;
-        /* find the initiator object */
-
-        i_obj = find_sc_obj(nullptr, initiator_name);
-
-        /* find the target object which must be inside this object */
-        t_obj = find_sc_obj(module_obj, target_name);
-
         // actually you could probably just cast everything to (tlm::tlm_target_socket<>*), but
         // we will dynamic cast to be sure.
-        if (!try_bind_all<32>(i_obj, t_obj) && !try_bind_all<64>(i_obj, t_obj)) {
-            SCP_FATAL(())("No bind found for: {} to {}", i_obj->name(), t_obj->name());
+        if (!try_bind_all<32>(initiator, target)
+         && !try_bind_all<64>(initiator, target)) {
+            SCP_FATAL(())("No bind found for: {} to {}", initiator->name(), target->name());
+        }
+    }
+
+    // returns true if binding has been found, false otherwise
+    bool try_do_binding(sc_core::sc_module* module_obj, const std::string& initiator_name, const std::string& target_name)
+    {
+        // find the target object which must be inside this object
+        // note it must be found at this point
+        auto* target = find_sc_obj(module_obj, target_name, true);
+        if (!target) {
+            SCP_FATAL(())("Binding target does not exist: {}", target_name);
+            return false;
+        }
+
+        // try to find the initiator object
+        // it may be deferred for later resolution
+        auto* initiator = find_sc_obj(nullptr, initiator_name, true);
+        if (!initiator) {
+            return false;
+        }
+
+        bind_objects(initiator, target);
+
+        return true;
+    }
+
+    // fatal error if deferred binding does not work
+    void do_deferred_binding(const DeferredBinding& binding)
+    {
+        // find the target object which must be inside this object
+        // note it must be found at this point
+        auto* target = find_sc_obj(nullptr, binding.target, true);
+        if (!target) {
+            SCP_FATAL(())("Target deferred binding not found: "
+                "owner= {}, initiator={}, target={}",
+                binding.owner, binding.initiator, binding.target
+            );
+
+        }
+
+        /* try to find the initiator object */
+        auto* initiator = find_sc_obj(nullptr, binding.initiator, true);
+        if (!initiator) {
+            SCP_FATAL(())("Initiator deferred binding not found: ",
+                "owner= {}, initiator={}, target={}",
+                binding.owner, binding.initiator, binding.target
+            );
+        }
+
+        bind_objects(initiator, target);
+    }
+
+    void bind_or_defer(sc_core::sc_module* module_obj, const std::string& initiator_name, const std::string& target_name)
+    {
+        if (!try_do_binding(module_obj, initiator_name, target_name)) {
+            deferred_bindings.push_back({
+                module_obj->name(),
+                initiator_name,
+                target_name,
+            });
+        }
+    }
+
+    void resolve_deferred_bindings()
+    {
+        for (auto it = deferred_bindings.begin(); it != deferred_bindings.end(); it = deferred_bindings.erase(it)) {
+            do_deferred_binding(*it);
         }
     }
 
@@ -1301,7 +1373,7 @@ private:
                     target_name = std::string(name()) + "." + target_name;
                 }
                 SCP_TRACE(())("Bind {} to {}", target_name, initiator_name);
-                do_binding(module_obj, target_name, initiator_name);
+                bind_or_defer(module_obj, target_name, initiator_name);
             }
         }
     }

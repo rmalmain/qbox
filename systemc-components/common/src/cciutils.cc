@@ -13,9 +13,10 @@ using namespace cci;
  *  throws SC_ERROR if nothing found.
  * @param m     current parent object (use null to start from the top)
  * @param name  name being searched for
+ * @param no_fatal do not trigger a fatal error if not found.
  * @return sc_core::sc_object* return object if found
  */
-sc_core::sc_object* gs::find_sc_obj(sc_core::sc_object* m, std::string name, bool test)
+sc_core::sc_object* gs::find_sc_obj(sc_core::sc_object* m, std::string name, bool no_fatal)
 {
     if (m && name == m->name()) {
         return m;
@@ -34,7 +35,7 @@ sc_core::sc_object* gs::find_sc_obj(sc_core::sc_object* m, std::string name, boo
     if (ip_it != end(children)) {
         return find_sc_obj(*ip_it, name);
     } else {
-        if (!test) {
+        if (!no_fatal) {
             if (m) {
                 SCP_ERR("cciutils.find_sc_obj") << "Unable to find " << name << " in sc_object " << m->name();
             } else {
