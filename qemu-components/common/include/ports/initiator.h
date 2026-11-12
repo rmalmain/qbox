@@ -655,6 +655,10 @@ public:
         TlmInitiatorSocket::bind(*static_cast<tlm::tlm_bw_transport_if<>*>(this));
     }
 
+    QemuInitiatorSocket(std::string_view name, QemuInitiatorIface& initiator, QemuInstance& inst)
+        : QemuInitiatorSocket(std::string(name).c_str(), initiator, inst)
+    {}
+
     void init(qemu::Device& dev, const char* prop)
     {
         using namespace std::placeholders;
@@ -674,6 +678,8 @@ public:
 
         m_dev = dev;
     }
+
+    void init(qemu::Device& dev, std::string_view prop) { return init(dev, std::string(prop).c_str()); }
 
     void end_of_simulation()
     {
